@@ -1,9 +1,31 @@
-from flask import Flask,make_response,json,jsonify,redirect,url_for,request,session,render_template,flash
-import click
-from forms import LoginForm
+from flask import Flask,make_response,json,jsonify,redirect,url_for,request,session,render_template,flash,abort
+import click,os
+from forms import LoginForm,NewNoteForm,EditNoteForm,DeleteNoteForm
+from flask_sqlalchemy import SQLAlchemy
+from flask_migrate import Migrate
+from flask_mail import Mail
 
 app = Flask(__name__)
 app.secret_key='secret string'
+db=SQLAlchemy(app)
+migrate=Migrate(app,db)
+app.config.update(
+    #MAIL_SERVER=os.getenv('MAIL_SERVER'),
+    MAIL_SERVER='smtp.163.com',
+    MAIL_PORT='465',
+    MAIL_USE_TLS=True,
+    #MAIL_USERNAME=os.getenv('MAIL_USERNAME'),
+    MAIL_USERNAME='nbyzwqk@163.com',
+    #MAIL_PASSWORD=os.getenv('MAIL_PASSWORD'),
+    MAIL_PASSWORD='CNEPQTZKJZBZPPZY',
+    #MAIL_DEFAULT_SENDER=('Wqk',os.getenv('MAIL_USERNAME'))
+    MAIL_DEFAULT_SENDER=('Wqk','nbyzwqk@163.com')
+)
+mail=Mail(app)
+
+app.config['SQLALCHEMY_DATABASE_URI']=os.getenv('DATABASE_URL','sqlite:///'+
+    os.path.join(app.root_path,'data.db'))
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS']=False
 
 @app.route('/hi')
 @app.route('/')
@@ -107,7 +129,9 @@ def baz(n):
 @app.route('/index')
 def index():
     a='wqk'
-    return render_template('index.html',a=a)
+    notes=Note.query.all()
+    form=DeleteNoteForm()
+    return render_template('index.html',a=a,notes=notes,form=form)
 
 @app.route('/flash')
 def just_flash():
@@ -126,6 +150,106 @@ def basic():
         flash('Welcome home,%s' % username)
         return redirect(url_for('index'))
     return render_template('basic.html',form=form)
+
+@app.cli.command()
+def initdb():
+    db.create_all()
+    click.echo('Initialized database.')
+
+@app.shell_context_processor
+def make_shell_context():
+    return dict(db=db,Note=Note,Author=Author,Article=Article)
+
+class Note(db.Model):
+    id=db.Column(db.Integer,primary_key=True)
+    body=db.Column(db.Text)
+
+    def __repr__(self):
+        return '<Note %r>' % self.body
+
+class Author(db.Model):
+    id=db.Column(db.Integer,primary_key=True)
+    name=db.Column(db.String(70),unique=True)
+    phone=db.Column(db.String(20))
+    articles=db.relationship('Article')
+
+class Article(db.Model):
+    id=db.Column(db.Integer,primary_key=True)
+    title=db.Column(db.String(50),index=True)
+    body=db.Column(db.Text)
+    author_id=db.Column(db.Integer,db.ForeignKey('author.id'))
+
+@app.route('/new',methods=['GET','POST'])
+def new_note():
+    form=NewNoteForm()
+    if form.validate_on_submit():
+        body=form.body.data
+        note=Note(body=body)
+        db.session.add(note)
+        db.session.commit()
+        flash('Your note is saved.')
+        return redirect(url_for('index'))
+    return render_template('new_note.html',form=form)
+
+@app.route('/edit/<int:note_id>',methods=['GET','POST'])
+def edit_note(note_id):
+    form=EditNoteForm()
+    note=Note.query.get(note_id)
+    if form.validate_on_submit():
+       note.body=form.body.data
+       db.session.commit()
+       flash('Your note is updated.')
+       return redirect(url_for('index'))
+    form.body.data=note.body
+    return render_template('edit_note.html',form=form)
+
+@app.route('/delete/<int:note_id>',methods=['POST'])
+def delete_note(note_id):
+    form=DeleteNoteForm()
+    if form.validate_on_submit():
+        note=Note.query.get(note_id)
+        db.session.delete(note)
+        db.session.commit()
+        flash('Your note is deleted.')
+    else:
+        abort(400)
+    return redirect(url_for('index'))
+
+association_table=db.Table('association',db.Column('student_id',db.Integer,
+                           db.ForeignKey('student.id')),db.Column('teacher_id',
+                           db.Integer,db.ForeignKey('teacher.id')))
+
+class Student(db.Model):
+    id=db.Column(db.Integer,primary_key=True)
+    name=db.Column(db.String(70),unique=True)
+    grade=db.Column(db.String(20))
+    teachers=db.relationship('Teacher',secondary=association_table,
+                             back_populates='student')
+
+class Teacher(db.Model):
+    id=db.Column(db.Integer,primary_key=True)
+    name=db.Column(db.String(70),unique=True)
+    office=db.Column(db.String(20))
+    students=db.relationship('Student',secondary=association_table,
+                             back_populates='teacher')
+
+class Post(db.Model):
+    id=db.Column(db.Integer,primary_key=True)
+    title=db.Column(db.String(50),unique=True)
+    body=db.Column(db.Text)
+    comments=db.relationship('Comment',cascade='save-update,merge,delete',back_populates='post')
+
+class Comment(db.Model):
+    id=db.Column(db.Integer,primary_key=True)
+    body=db.Column(db.Text)
+    post_id=db.Column(db.Integer,db.ForeignKey('post.id'))
+    post=db.relationship('Post',back_populates='comments')
+
+
+
+@app.shell_context_processor
+def make_shell_context():
+    return dict(db=db,Note=Note,Author=Author,Article=Article,Post=Post,Comment=Comment)
 
 if __name__ == '__main__':
     app.run()
